@@ -15,15 +15,18 @@ def get_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--train_data", type=str, default="split100")
     parser.add_argument("--inference_fasta_folder", type=str, default="data")
-    parser.add_argument("--inference_fasta", type=str, default="new.fasta")
+    parser.add_argument("--inference_fasta", type=str, default="CARE_proteins_EC3split_val.fasta")#"new.fasta")
     parser.add_argument("--gpu_id", type=int, default=0)  # Set to None if you want to force CPU
     parser.add_argument("--inference_fasta_start", type=int, default=0)
-    parser.add_argument("--inference_fasta_end", type=int, default=300)
+    parser.add_argument("--inference_fasta_end", type=int, default=10_000)
     parser.add_argument("--toks_per_batch", type=int, default=2048)
     parser.add_argument("--esm_type", type=str, default="esm1b_t33_650M_UR50S")
     parser.add_argument("--truncation_seq_length", type=int, default=1022)
     parser.add_argument("--esm_batches_per_clean_inference", type=int, default=200)
     parser.add_argument("--gmm", type=str, default="./data/pretrained/gmm_ensumble.pkl")
+
+    parser.add_argument("--model_name", type=str, default="CARE_proteins_EC3split_train_triplet")
+    parser.add_argument("--out_embs_dir", type=str, default="data/embeddings/")
 
     return parser.parse_args()
 
@@ -126,12 +129,27 @@ def get_max_sep_predictions_dict(inference_df, gmm):
 
 def CLEAN_max_sep_predictions(
         args,  CLEAN_model, sequence_label_esm_emb_dict, emb_train, ec_id_dict_train, device):
+    global max_sep_counter
+    if 'max_sep_counter' not in globals():
+        max_sep_counter = 0
+        
     esm_emb_inference = torch.cat(
         [sequence_label_esm_emb_dict[label].unsqueeze(0) 
             for label in sequence_label_esm_emb_dict])
     id_ec_inference_dummy = {seq_label:[] for seq_label in sequence_label_esm_emb_dict}
     with torch.no_grad():
         model_emb_inference  = CLEAN_model(esm_emb_inference.to(device)).to("cpu").clone()
+    # Store model embeddings and labels
+    # Create output directory if it doesn't exist
+    os.makedirs(f'./{args.out_embs_dir}/{args.model_name}/', exist_ok=True)
+    embs_pth = f'./{args.out_embs_dir}/{args.model_name}/CLEAN_embs_{max_sep_counter}.pt'
+    print(f"saving {len(sequence_label_esm_emb_dict)} embeddings to {embs_pth}")
+    torch.save({
+        'embeddings': model_emb_inference,
+        'labels': list(sequence_label_esm_emb_dict.keys())
+    }, embs_pth)
+
+    max_sep_counter += 1
     inference_dist = get_dist_map_test(
         emb_train, model_emb_inference, ec_id_dict_train, id_ec_inference_dummy, "cpu", torch.float32)
     inference_df = pd.DataFrame.from_dict(inference_dist)
@@ -142,10 +160,13 @@ def CLEAN_max_sep_predictions(
 def main():
     args = get_args()
     inference_fasta_path = f'{args.inference_fasta_folder}/{args.inference_fasta}'
-    print("loading inference fasta")
+
+    print(f"loading inference fasta from {inference_fasta_path}")
     inference_fasta = pysam.FastaFile(inference_fasta_path)
     dataset = CustomFastaBatchedDataset(
         inference_fasta, fasta_start=args.inference_fasta_start, fasta_end=args.inference_fasta_end)
+    
+    print("Dataset length: ", len(dataset))
     # keep track of index label mappings in the original fasta
     #sequence_indices_labels_dict = dataset.sequence_indices_labels_dict
     sequence_labels_indices_dict = dataset.sequence_labels_indices_dict
@@ -170,7 +191,8 @@ def main():
 
     print("loading CLEAN model")
     CLEAN_model = LayerNormNet(512, 128, device, torch.float32)
-    checkpoint = torch.load('./data/pretrained/'+ args.train_data +'.pth', map_location=device)
+    checkpoint = torch.load('./data/model/'+ args.model_name +'.pth', map_location=device)
+    # checkpoint = torch.load('./data/model/CARE_proteins_EC3split_train_triplet.pth', map_location=device)
     CLEAN_model.load_state_dict(checkpoint)
     CLEAN_model.eval()
     _, ec_id_dict_train = get_ec_id_dict('./data/' + args.train_data + '.csv')
@@ -179,12 +201,14 @@ def main():
 
     sequence_label_esm_emb_dict = {}
     max_sep_predictions_dict = {} 
+    # all_embs_dict = {}
 
     for batch_idx, (labels, strs, toks) in tqdm(enumerate(data_loader)):
         embeddings = get_last_layer_emb(
             args=args, model=model, toks=toks, strs=strs, repr_layers=repr_layers)
         for label, emb in zip(labels, embeddings):
             sequence_label_esm_emb_dict[label] = emb
+            # all_embs_dict[label] = emb
 
         if (batch_idx + 1) % args.esm_batches_per_clean_inference == 0:
             # perform clean inference
@@ -193,6 +217,12 @@ def main():
             )
             max_sep_predictions_dict.update(predictions)
             sequence_label_esm_emb_dict = {}
+    
+    # fasta_name = args.inference_fasta.split(".")[0]
+    # emb_file_name = f"{fasta_name}_{args.inference_fasta_start}_{args.inference_fasta_end}_embs.pt"
+    # emb_file_path = f"./data/{emb_file_name}"
+    # print(f"saving {len(all_embs_dict)} embeddings to {emb_file_path}")
+    # torch.save(all_embs_dict, emb_file_path)
             
     # process any remaining sequences that didn't complete a full batch group
     if sequence_label_esm_emb_dict:

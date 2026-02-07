@@ -171,7 +171,9 @@ def mask_sequences(single_id, csv_name, fasta_name) :
                 output_fasta.write(seq + '\n')
 
 def mutate_single_seq_ECs(train_file):
+    print('train_file: ', train_file)
     id_ec, ec_id =  get_ec_id_dict('./data/' + train_file + '.csv')
+    print('len(id_ec), len(ec_id): ', len(id_ec), len(ec_id))
     single_ec = set()
     for ec in ec_id.keys():
         if len(ec_id[ec]) == 1:

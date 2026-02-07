@@ -65,10 +65,47 @@ def train(model, args, epoch, train_loader,
     return total_loss/(batch + 1)
 
 
+def mutate_single_seq_ECs(train_file):
+    print('train_file: ', train_file)
+    id_ec, ec_id =  get_ec_id_dict('./data/' + train_file + '.csv')
+    print('len(id_ec), len(ec_id): ', len(id_ec), len(ec_id))
+    single_ec = set()
+    for ec in ec_id.keys():
+        if len(ec_id[ec]) == 1:
+            single_ec.add(ec)
+    single_id = set()
+    for id in id_ec.keys():
+        for ec in id_ec[id]:
+            if ec in single_ec and not os.path.exists('./data/esm_data/' + id + '_1.pt'):
+                single_id.add(id)
+                break
+    print("Number of EC numbers with only one sequences:",len(single_ec))
+    print("Number of single-seq EC number sequences need to mutate: ",len(single_id))
+    print("Number of single-seq EC numbers already mutated: ", len(single_ec) - len(single_id))
+    mask_sequences(single_id, train_file, train_file+'_single_seq_ECs')
+    fasta_name = train_file+'_single_seq_ECs'
+    return fasta_name
+
+
 def main():
     seed_everything()
     ensure_dirs('./data/model')
     args = parse()
+
+    # from https://github.com/tttianhao/CLEAN/tree/main
+    # from CLEAN.utils import mutate_single_seq_ECs, retrive_esm1b_embedding
+    csv_to_fasta("data/CARE_proteins_EC3split_train_for_CLEAN.csv", "data/CARE_proteins_EC3split_train_for_CLEAN.fasta")
+    print('1. Mutating single-seq ECs...')
+    train_file = args.training_data
+    train_fasta_file = mutate_single_seq_ECs(train_file)
+    print('2. Retrieving ESM1b embeddings...')
+    retrive_esm1b_embedding(train_file)
+    retrive_esm1b_embedding(train_fasta_file)
+    print('3. Computing distance map...')
+    # from CLEAN.utils import compute_esm_distance
+    compute_esm_distance(train_file)
+    # compute_esm_distance(train_fasta_file)
+
     torch.backends.cudnn.benchmark = True
     id_ec, ec_id_dict = get_ec_id_dict('./data/' + args.training_data + '.csv')
     ec_id = {key: list(ec_id_dict[key]) for key in ec_id_dict.keys()}
@@ -97,7 +134,7 @@ def main():
     print("The number of unique EC numbers: ", len(dist_map.keys()))
     #======================== training =======-=================#
     # training
-    for epoch in range(1, epochs + 1):
+    for epoch in tqdm(range(1, epochs + 1), desc="Training", total=epochs, file=open(f'./data/model/{model_name}_training.log', 'w')):
         if epoch % args.adaptive_rate == 0 and epoch != epochs + 1:
             optimizer = torch.optim.Adam(
                 model.parameters(), lr=lr, betas=(0.9, 0.999))
@@ -116,6 +153,7 @@ def main():
         epoch_start_time = time.time()
         train_loss = train(model, args, epoch, train_loader,
                            optimizer, device, dtype, criterion)
+        torch.save(model.state_dict(), './data/model/' + model_name + '_' + str(epoch) + '.pth')
         # only save the current best model near the end of training
         if (train_loss < best_loss and epoch > 0.8*epochs):
             torch.save(model.state_dict(), './data/model/' + model_name + '.pth')
