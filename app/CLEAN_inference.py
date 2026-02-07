@@ -25,7 +25,7 @@ def get_args():
     parser.add_argument("--esm_batches_per_clean_inference", type=int, default=200)
     parser.add_argument("--gmm", type=str, default="./data/pretrained/gmm_ensumble.pkl")
 
-    parser.add_argument("--model_name", type=str, default="CARE_proteins_EC3split_train_triplet")
+    parser.add_argument("--model_name", type=str, default="split100")
     parser.add_argument("--out_embs_dir", type=str, default="data/embeddings/")
 
     return parser.parse_args()
@@ -159,7 +159,11 @@ def CLEAN_max_sep_predictions(
 
 def main():
     args = get_args()
-    inference_fasta_path = f'{args.inference_fasta_folder}/{args.inference_fasta}'
+    import os
+    if os.path.isabs(args.inference_fasta):
+        inference_fasta_path = args.inference_fasta
+    else:
+        inference_fasta_path = f'{args.inference_fasta_folder}/{args.inference_fasta}'
 
     print(f"loading inference fasta from {inference_fasta_path}")
     inference_fasta = pysam.FastaFile(inference_fasta_path)
@@ -191,7 +195,7 @@ def main():
 
     print("loading CLEAN model")
     CLEAN_model = LayerNormNet(512, 128, device, torch.float32)
-    checkpoint = torch.load('./data/model/'+ args.model_name +'.pth', map_location=device)
+    checkpoint = torch.load('./data/pretrained/'+ args.model_name +'.pth', map_location=device)
     # checkpoint = torch.load('./data/model/CARE_proteins_EC3split_train_triplet.pth', map_location=device)
     CLEAN_model.load_state_dict(checkpoint)
     CLEAN_model.eval()
@@ -238,6 +242,7 @@ def main():
     ]).sort_values('Index').reset_index(drop=True)
     fasta_name = args.inference_fasta.split(".")[0]
     prediction_file_name = f"results/inputs/{fasta_name}_{args.inference_fasta_start}_{args.inference_fasta_end}.csv"
+    os.makedirs(os.path.dirname(prediction_file_name), exist_ok=True)
     max_sep_predictions_df.to_csv(prediction_file_name, index=False)
 
 
